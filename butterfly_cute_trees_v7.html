@@ -1,0 +1,535 @@
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+#game-wrap { position: relative; width: 100%; max-width: 720px; margin: 0 auto; font-family: var(--font-sans); }
+#ui-overlay { position: relative; width: 100%; background: var(--color-background-secondary); border-radius: var(--border-radius-lg); overflow: hidden; border: 0.5px solid var(--color-border-tertiary); }
+#webcam { position: absolute; bottom: 52px; right: 10px; width: 150px; height: 112px; border-radius: 12px; border: 3px solid rgba(255,255,255,0.85); object-fit: cover; transform: scaleX(-1); z-index: 5; display: none; }
+#cam-dot { position: absolute; bottom: 120px; right: 14px; width: 10px; height: 10px; border-radius: 50%; background: #e24b4a; z-index: 6; display: none; }
+#canvas { width: 100%; height: 440px; display: block; border-radius: var(--border-radius-lg); }
+#hud { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--color-background-primary); border-top: 0.5px solid var(--color-border-tertiary); font-size: 18px; font-weight: 500; color: var(--color-text-secondary); }
+#hud span { color: var(--color-text-primary); font-size: 20px; }
+#start-screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; background: rgba(255,240,248,0.97); border-radius: var(--border-radius-lg); z-index: 10; }
+#start-screen h2 { font-size: 28px; font-weight: 500; color: #9b2a5a; }
+#start-screen p { font-size: 15px; color: #c05080; text-align: center; max-width: 340px; line-height: 1.9; }
+#start-btn { padding: 14px 36px; background: #c05080; color: white; border: none; border-radius: 40px; font-size: 18px; cursor: pointer; font-family: var(--font-sans); }
+#start-btn:hover { background: #9b2a5a; }
+#gameover-screen { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: rgba(255,240,248,0.97); border-radius: var(--border-radius-lg); z-index: 10; }
+#gameover-screen h2 { font-size: 28px; font-weight: 500; color: #9b2a5a; }
+#gameover-screen p { font-size: 18px; color: #c05080; }
+#retry-btn { padding: 14px 36px; background: #c05080; color: white; border: none; border-radius: 40px; font-size: 18px; cursor: pointer; font-family: var(--font-sans); }
+#retry-btn:hover { background: #9b2a5a; }
+#cam-status { font-size: 14px; color: #c05080; }
+#tip { font-size: 13px; color: var(--color-text-tertiary); padding: 7px 16px; text-align: center; background: var(--color-background-primary); border-top: 0.5px solid var(--color-border-tertiary); border-radius: 0 0 var(--border-radius-lg) var(--border-radius-lg); }
+</style>
+
+<div id="game-wrap">
+  <div id="ui-overlay">
+    <canvas id="canvas"></canvas>
+    <video id="webcam" autoplay playsinline muted></video>
+    <div id="cam-dot"></div>
+    <div id="start-screen">
+      <h2>🦋 봄꽃 나비 여행</h2>
+      <p>진달래 🌸 벚꽃 🌸 개나리 🌼 목련 🤍<br>손을 위아래로 움직여서<br>나비를 꽃한테 데려다 줘요!</p>
+      <button id="start-btn">시작하기 ▶</button>
+      <div id="cam-status"></div>
+    </div>
+    <div id="gameover-screen">
+      <h2 id="end-emoji">🎉</h2>
+      <h2 id="end-msg">잘했어요!</h2>
+      <p id="final-score"></p>
+      <button id="retry-btn">다시 하기 ▶</button>
+    </div>
+    <div id="hud">
+      <div>🌸 <span id="score-display">0</span></div>
+      <div id="lives-display">❤️❤️❤️❤️❤️</div>
+    </div>
+  </div>
+  <div id="tip">손을 위아래로 움직여 나비를 조종하세요. 나무 위를 날아서 봄꽃을 모아보세요!</div>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const video = document.getElementById('webcam');
+let W = 720, H = 440;
+canvas.width = W; canvas.height = H;
+
+const GROUND_Y = H - 60; // ground line
+
+let state = 'idle', score = 0, lives = 5, frame = 0;
+let butterfly = { x: 130, y: GROUND_Y / 2, wingPhase: 0 };
+let handY = 0.5, invincible = 0;
+let obstacles = [], flowers = [], stars = [];
+let praiseTimer = 0, praiseText = '';
+
+const SPEED = 1.2, OBS_FREQ = 210, FLW_FREQ = 105, LERP_S = 0.07;
+const PRAISE = ['잘했어요! 🎉','최고야! ⭐','예쁜 꽃! 🌸','대단해요! 👏','너무 잘해요! 🌟','활짝! 💐'];
+
+function lerp(a,b,t){ return a+(b-a)*t; }
+function rand(a,b){ return a+Math.random()*(b-a); }
+
+// ── Flower drawers (unchanged) ──────────────────────────────────────────────
+function drawJindalrae(c,x,y,sc,ph){
+  c.save();c.translate(x,y);const s=sc*(1+Math.sin(ph)*0.07);c.scale(s,s);
+  for(let i=0;i<5;i++){
+    c.save();c.rotate((i/5)*Math.PI*2);
+    c.beginPath();c.moveTo(0,0);c.bezierCurveTo(-10,-8,-12,-22,-2,-28);c.bezierCurveTo(2,-30,6,-28,8,-24);c.bezierCurveTo(14,-18,12,-8,0,0);
+    c.fillStyle='#e8507a';c.fill();
+    c.beginPath();c.moveTo(0,-4);c.bezierCurveTo(-4,-10,-6,-20,-1,-25);c.bezierCurveTo(1,-26,3,-24,3,-20);c.bezierCurveTo(5,-14,3,-8,0,-4);
+    c.fillStyle='rgba(255,160,190,0.5)';c.fill();c.restore();
+  }
+  for(let i=0;i<7;i++){const a=(i/7)*Math.PI*2,r=12+rand(0,4);c.save();c.rotate(a);c.strokeStyle='#c03060';c.lineWidth=0.8;c.beginPath();c.moveTo(0,0);c.lineTo(0,-r);c.stroke();c.beginPath();c.arc(0,-r,1.8,0,Math.PI*2);c.fillStyle='#ffe066';c.fill();c.restore();}
+  c.beginPath();c.arc(0,0,4,0,Math.PI*2);c.fillStyle='#fff0f5';c.fill();c.restore();
+}
+function drawBeokkot(c,x,y,sc,ph){
+  c.save();c.translate(x,y);const s=sc*(1+Math.sin(ph)*0.08);c.scale(s,s);
+  for(let i=0;i<5;i++){
+    c.save();c.rotate((i/5)*Math.PI*2+0.3);
+    c.beginPath();c.moveTo(0,0);c.bezierCurveTo(-9,-6,-11,-18,-5,-24);c.bezierCurveTo(-2,-27,0,-26,0,-23);c.bezierCurveTo(0,-26,2,-27,5,-24);c.bezierCurveTo(11,-18,9,-6,0,0);
+    c.fillStyle='#ffccd8';c.fill();c.strokeStyle='rgba(210,100,130,0.35)';c.lineWidth=0.5;c.stroke();c.restore();
+  }
+  for(let i=0;i<12;i++){const a=(i/12)*Math.PI*2,r=9+rand(0,4);c.save();c.rotate(a);c.strokeStyle='#e8a0b0';c.lineWidth=0.6;c.beginPath();c.moveTo(0,0);c.lineTo(0,-r);c.stroke();c.beginPath();c.arc(0,-r,1.2,0,Math.PI*2);c.fillStyle=i%2===0?'#ffe0a0':'#fff0b0';c.fill();c.restore();}
+  c.beginPath();c.arc(0,0,3.5,0,Math.PI*2);c.fillStyle='#fff8f0';c.fill();c.restore();
+}
+function drawGaenari(c,x,y,sc,ph){
+  c.save();c.translate(x,y);const s=sc*(1+Math.sin(ph)*0.08);c.scale(s,s);
+  for(let i=0;i<4;i++){
+    c.save();c.rotate((i/4)*Math.PI*2+Math.PI/4);
+    c.beginPath();c.moveTo(0,0);c.bezierCurveTo(-7,-8,-8,-20,-2,-27);c.bezierCurveTo(0,-29,2,-27,2,-25);c.bezierCurveTo(8,-20,7,-8,0,0);
+    c.fillStyle='#ffe000';c.fill();c.strokeStyle='rgba(180,130,0,0.35)';c.lineWidth=0.5;c.stroke();c.restore();
+  }
+  for(let i=0;i<5;i++){const a=(i/5)*Math.PI*2,r=6+rand(0,3);c.save();c.rotate(a);c.strokeStyle='#c8a000';c.lineWidth=0.7;c.beginPath();c.moveTo(0,0);c.lineTo(0,-r);c.stroke();c.beginPath();c.arc(0,-r,1.4,0,Math.PI*2);c.fillStyle='#fff176';c.fill();c.restore();}
+  c.beginPath();c.arc(0,0,3,0,Math.PI*2);c.fillStyle='#fffde0';c.fill();c.restore();
+}
+function drawMongnyeon(c,x,y,sc,ph){
+  c.save();c.translate(x,y);const s=sc*(1+Math.sin(ph)*0.06);c.scale(s,s);
+  for(let i=0;i<6;i++){
+    c.save();c.rotate((i/6)*Math.PI*2);
+    c.beginPath();c.moveTo(-6,4);c.bezierCurveTo(-14,-4,-16,-20,-6,-30);c.bezierCurveTo(-2,-34,2,-34,6,-30);c.bezierCurveTo(16,-20,14,-4,6,4);c.closePath();
+    c.fillStyle='#f8f0ff';c.fill();c.strokeStyle='rgba(160,120,180,0.3)';c.lineWidth=0.6;c.stroke();c.restore();
+  }
+  for(let i=0;i<3;i++){
+    c.save();c.rotate((i/3)*Math.PI*2+Math.PI/6);
+    c.beginPath();c.moveTo(-4,2);c.bezierCurveTo(-10,-4,-10,-16,-4,-22);c.bezierCurveTo(-1,-25,1,-25,4,-22);c.bezierCurveTo(10,-16,10,-4,4,2);c.closePath();
+    c.fillStyle='#efe8ff';c.fill();c.restore();
+  }
+  c.beginPath();c.ellipse(0,0,4,6,0,0,Math.PI*2);c.fillStyle='#d4b8e0';c.fill();
+  c.beginPath();c.ellipse(0,-1,2.5,4,0,0,Math.PI*2);c.fillStyle='#e8d8f0';c.fill();c.restore();
+}
+
+const FLOWER_TYPES = [
+  {name:'진달래',draw:drawJindalrae,color:'#e8507a',label:'진달래'},
+  {name:'벚꽃',  draw:drawBeokkot,  color:'#ffccd8',label:'벚꽃'},
+  {name:'개나리',draw:drawGaenari,  color:'#ffe000',label:'개나리'},
+  {name:'목련',  draw:drawMongnyeon,color:'#e8d8f0',label:'목련'},
+];
+
+// ── Cute bumpy tree (grows from ground, trunk connects seamlessly) ───────────
+// treeH: how tall from ground to very top of canopy
+function drawCuteTree(treeH) {
+  const trunkW = Math.max(14, treeH * 0.13);
+  const trunkH = treeH * 0.42;            // trunk portion
+  const canopyBottom = GROUND_Y - trunkH; // where canopy starts
+  const cx = 0;                           // centered at 0 (caller translates)
+
+  // ── trunk ──────────────────────────────────────────────────────────────
+  // Draw trunk as a trapezoid slightly wider at bottom
+  const tw = trunkW, twTop = trunkW * 0.75;
+  ctx.beginPath();
+  ctx.moveTo(-tw/2, GROUND_Y);
+  ctx.lineTo(-twTop/2, canopyBottom + 4);
+  ctx.lineTo( twTop/2, canopyBottom + 4);
+  ctx.lineTo( tw/2, GROUND_Y);
+  ctx.closePath();
+  ctx.fillStyle = '#9B6B3A';
+  ctx.fill();
+  // bark shading
+  ctx.fillStyle = 'rgba(60,30,0,0.12)';
+  ctx.beginPath();
+  ctx.moveTo(-tw/2+2, GROUND_Y-2);
+  ctx.lineTo(-twTop/2+2, canopyBottom+6);
+  ctx.lineTo(-twTop/2+5, canopyBottom+6);
+  ctx.lineTo(-tw/2+5, GROUND_Y-2);
+  ctx.closePath();
+  ctx.fill();
+
+  // ── bumpy canopy ────────────────────────────────────────────────────────
+  // Build canopy as a series of overlapping circles arranged in a cloud-like shape
+  // More circles = more bumps = cuter look
+  const canopyH = treeH - trunkH;         // height of canopy
+  const baseR   = canopyH * 0.38;         // radius of main blobs
+
+  // positions of bumps relative to tree center, y relative to GROUND_Y
+  const bumps = [
+    // bottom row – wide, sits just above trunk
+    {bx: -baseR*0.6, by: canopyBottom + baseR*0.55, r: baseR*0.72},
+    {bx:  baseR*0.6, by: canopyBottom + baseR*0.55, r: baseR*0.72},
+    {bx:  0,         by: canopyBottom + baseR*0.62, r: baseR*0.68},
+    // middle row
+    {bx: -baseR*0.45, by: canopyBottom + baseR*0.05, r: baseR*0.78},
+    {bx:  baseR*0.45, by: canopyBottom + baseR*0.05, r: baseR*0.78},
+    // top centre
+    {bx:  0,          by: canopyBottom - baseR*0.48, r: baseR*0.82},
+    // top sides
+    {bx: -baseR*0.35, by: canopyBottom - baseR*0.28, r: baseR*0.62},
+    {bx:  baseR*0.35, by: canopyBottom - baseR*0.28, r: baseR*0.62},
+  ];
+
+  // Shadow ellipse on ground
+  ctx.save();
+  ctx.globalAlpha = 0.08;
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(0, GROUND_Y, baseR*1.1, 7, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.restore();
+
+  // Dark green base pass (outline / depth)
+  bumps.forEach(b=>{
+    ctx.beginPath();
+    ctx.arc(b.bx, b.by, b.r + 2, 0, Math.PI*2);
+    ctx.fillStyle = '#3d8c1a';
+    ctx.fill();
+  });
+  // Mid green
+  bumps.forEach(b=>{
+    ctx.beginPath();
+    ctx.arc(b.bx, b.by, b.r, 0, Math.PI*2);
+    ctx.fillStyle = '#58b830';
+    ctx.fill();
+  });
+  // Highlight pass (lighter top of each bump)
+  bumps.forEach(b=>{
+    ctx.beginPath();
+    ctx.arc(b.bx - b.r*0.15, b.by - b.r*0.22, b.r*0.65, 0, Math.PI*2);
+    ctx.fillStyle = '#78d448';
+    ctx.fill();
+  });
+  // Tiny specular
+  bumps.forEach(b=>{
+    ctx.beginPath();
+    ctx.arc(b.bx - b.r*0.2, b.by - b.r*0.3, b.r*0.25, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fill();
+  });
+
+  // Spring blossom dots sprinkled on canopy
+  const blossomSeeds = [
+    {bx:-baseR*0.3, by:canopyBottom-baseR*0.55},
+    {bx: baseR*0.25,by:canopyBottom-baseR*0.45},
+    {bx:-baseR*0.55,by:canopyBottom+baseR*0.0},
+    {bx: baseR*0.5, by:canopyBottom+baseR*0.05},
+    {bx: 0,         by:canopyBottom-baseR*0.7},
+    {bx:-baseR*0.15,by:canopyBottom+baseR*0.35},
+    {bx: baseR*0.18,by:canopyBottom+baseR*0.3},
+  ];
+  blossomSeeds.forEach((b,i)=>{
+    const col = ['#ffccd8','#ffe0ec','#fff0f5','#ffd6e8'][i%4];
+    ctx.beginPath(); ctx.arc(b.bx, b.by, 4.5, 0, Math.PI*2);
+    ctx.fillStyle = col; ctx.fill();
+    ctx.beginPath(); ctx.arc(b.bx+1, b.by-1, 2, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.fill();
+  });
+}
+
+// Collision check radius for canopy
+function treeCanopyInfo(o) {
+  const trunkH = o.treeH * 0.42;
+  const canopyBottom = GROUND_Y - trunkH;
+  const baseR = (o.treeH - trunkH) * 0.38;
+  // approximate as one big bounding circle centered at canopy mid
+  const canopyCY = canopyBottom - baseR * 0.1;
+  const canopyR  = baseR * 1.3;
+  return { canopyCX: o.x + o.w/2, canopyCY, canopyR };
+}
+
+// ── Spawn ───────────────────────────────────────────────────────────────────
+function spawnObstacle(){
+  const minH = 50, maxH = GROUND_Y - 120;
+  const treeH = minH + rand(0, maxH - minH);
+  obstacles.push({ x: W+40, treeH, w: 60 });
+}
+
+function spawnFlower(){
+  const t = FLOWER_TYPES[Math.floor(rand(0, FLOWER_TYPES.length))];
+  flowers.push({
+    x: W+30, y: rand(50, GROUND_Y - 80),
+    type: t, pulse: rand(0,Math.PI*2), swing: rand(0,Math.PI*2),
+    baseScale: rand(0.88,1.1)
+  });
+}
+
+function spawnStar(x,y,color){
+  for(let i=0;i<10;i++){
+    const a=rand(0,Math.PI*2);
+    stars.push({x,y,vx:Math.cos(a)*rand(1.5,5),vy:Math.sin(a)*rand(1.5,5)-1,life:55,maxLife:55,color,r:rand(3,8)});
+  }
+}
+
+// ── Draw background ─────────────────────────────────────────────────────────
+function drawBG(){
+  // Sky
+  const sky=ctx.createLinearGradient(0,0,0,GROUND_Y);
+  sky.addColorStop(0,'#b8e4f4'); sky.addColorStop(1,'#e8f8e8');
+  ctx.fillStyle=sky; ctx.fillRect(0,0,W,GROUND_Y);
+
+  // Clouds
+  function cloud(cx,cy,s){
+    ctx.fillStyle='rgba(255,255,255,0.88)';
+    [[0,0,1],[s*1.35,s*0.28,0.8],[-s*1.1,s*0.22,0.72],[s*0.05,-s*0.48,0.62]].forEach(([dx,dy,sr])=>{
+      ctx.beginPath();ctx.arc(cx+dx,cy+dy,s*sr,0,Math.PI*2);ctx.fill();
+    });
+  }
+  cloud(95+Math.sin(frame*0.0014)*16, 52, 26);
+  cloud(335+Math.sin(frame*0.001+1)*13, 36, 20);
+  cloud(570+Math.sin(frame*0.0011+2)*15, 60, 24);
+
+  // Ground — flat solid strip, no gap
+  const grd=ctx.createLinearGradient(0,GROUND_Y,0,H);
+  grd.addColorStop(0,'#c8ee9a'); grd.addColorStop(1,'#a0cc68');
+  ctx.fillStyle=grd; ctx.fillRect(0,GROUND_Y,W,H-GROUND_Y);
+
+  // Wavy top of ground strip — seamlessly above
+  ctx.fillStyle='#b8e088';
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_Y);
+  for(let x=0;x<=W;x+=6){
+    ctx.lineTo(x, GROUND_Y - 3 - Math.sin(x*0.06+frame*0.018)*2.5);
+  }
+  ctx.lineTo(W, GROUND_Y+4); ctx.lineTo(0, GROUND_Y+4); ctx.closePath(); ctx.fill();
+
+  // Grass blades
+  ctx.strokeStyle='#7ab840'; ctx.lineWidth=1.4;
+  for(let x=8;x<W;x+=18){
+    const sway=Math.sin(x*0.25+frame*0.025)*2.5;
+    const h=5+Math.sin(x*0.4)*2;
+    ctx.beginPath(); ctx.moveTo(x, GROUND_Y+1); ctx.quadraticCurveTo(x+sway, GROUND_Y-h/2, x+sway*1.5, GROUND_Y-h); ctx.stroke();
+  }
+
+  // Decorative small spring flowers along ground
+  const gf=[FLOWER_TYPES[0],FLOWER_TYPES[2],FLOWER_TYPES[1],FLOWER_TYPES[3],FLOWER_TYPES[2],FLOWER_TYPES[0]];
+  gf.forEach((t,i)=>{
+    t.draw(ctx, 55+i*123, GROUND_Y+1, 0.3, frame*0.04+i*1.2);
+  });
+}
+
+function drawObstacleObj(o){
+  ctx.save();
+  ctx.translate(o.x + o.w/2, 0);
+  drawCuteTree(o.treeH);
+  ctx.restore();
+}
+
+function drawFlowerObj(f){
+  f.pulse+=0.05; f.swing+=0.028;
+  const sx=Math.sin(f.swing)*4;
+  ctx.save();
+  ctx.font='bold 11px var(--font-sans)';
+  ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.fillStyle='rgba(100,40,60,0.72)';
+  ctx.fillText(f.type.label, f.x+sx, f.y-35);
+  ctx.restore();
+  f.type.draw(ctx, f.x+sx, f.y, f.baseScale, f.pulse);
+}
+
+function drawButterfly(bx,by,wing){
+  const alpha=invincible>0?(Math.sin(frame*0.4)>0?0.3:1):1;
+  ctx.globalAlpha=alpha;
+  const w=Math.abs(Math.cos(wing))*30+6;
+  function dw(flip){
+    ctx.save();ctx.translate(bx,by);ctx.scale(flip,1);
+    ctx.beginPath();ctx.moveTo(0,0);ctx.bezierCurveTo(w*0.4,-22,w+8,-26,w+4,-8);ctx.bezierCurveTo(w,4,w*0.5,10,0,3);
+    ctx.fillStyle='#f4a0cc';ctx.fill();ctx.strokeStyle='#d060a0';ctx.lineWidth=1.5;ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,3);ctx.bezierCurveTo(w*0.3,6,w+4,22,w*0.8,28);ctx.bezierCurveTo(w*0.4,32,w*0.1,20,0,8);
+    ctx.fillStyle='#e070b8';ctx.fill();ctx.strokeStyle='#b04088';ctx.lineWidth=1.2;ctx.stroke();
+    ctx.beginPath();ctx.arc(w*0.45,-10,5.5,0,Math.PI*2);ctx.fillStyle='rgba(255,220,240,0.65)';ctx.fill();
+    ctx.restore();
+  }
+  dw(1);dw(-1);
+  ctx.beginPath();ctx.ellipse(bx,by,5,13,0,0,Math.PI*2);ctx.fillStyle='#5a1a3a';ctx.fill();
+  ctx.beginPath();ctx.arc(bx,by-15,5,0,Math.PI*2);ctx.fillStyle='#5a1a3a';ctx.fill();
+  ctx.strokeStyle='#5a1a3a';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(bx-2,by-18);ctx.quadraticCurveTo(bx-10,by-30,bx-13,by-28);
+  ctx.moveTo(bx+2,by-18);ctx.quadraticCurveTo(bx+10,by-30,bx+13,by-28);ctx.stroke();
+  ctx.beginPath();ctx.arc(bx-13,by-28,2.5,0,Math.PI*2);ctx.fillStyle='#f4a0cc';ctx.fill();
+  ctx.beginPath();ctx.arc(bx+13,by-28,2.5,0,Math.PI*2);ctx.fillStyle='#f4a0cc';ctx.fill();
+  ctx.globalAlpha=1;
+}
+
+function drawStars(){
+  stars=stars.filter(s=>s.life>0);
+  for(const s of stars){
+    ctx.globalAlpha=s.life/s.maxLife;
+    ctx.fillStyle=s.color;
+    ctx.beginPath();ctx.arc(s.x,s.y,s.r*(s.life/s.maxLife),0,Math.PI*2);ctx.fill();
+    s.x+=s.vx;s.y+=s.vy;s.vy+=0.08;s.life--;
+  }
+  ctx.globalAlpha=1;
+}
+
+function drawPraise(){
+  if(praiseTimer>0){
+    const a=praiseTimer/65;
+    ctx.save();
+    ctx.font=`${Math.round(26+Math.sin(frame*0.3)*3)}px var(--font-sans)`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle=`rgba(120,30,80,${a})`;
+    ctx.fillText(praiseText, W/2, GROUND_Y/2);
+    ctx.restore();
+    praiseTimer--;
+  }
+}
+
+function drawHandGuide(){
+  if(state!=='playing') return;
+  const py=handY*GROUND_Y;
+  ctx.save();
+  ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.setLineDash([6,6]);ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(0,py);ctx.lineTo(W,py);ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font='20px serif';ctx.textAlign='left';ctx.textBaseline='middle';
+  ctx.globalAlpha=0.55;ctx.fillText('✋',10,py);ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+// ── Collision ────────────────────────────────────────────────────────────────
+function checkCollision(){
+  const bx=butterfly.x, by=butterfly.y, br=13;
+  if(by-br<0||by+br>GROUND_Y) return true;
+  for(const o of obstacles){
+    // Trunk hit box
+    const tw = Math.max(14, o.treeH*0.13);
+    const trunkTop = GROUND_Y - o.treeH*0.42;
+    const txL = o.x+o.w/2 - tw/2 - 2;
+    const txR = o.x+o.w/2 + tw/2 + 2;
+    if(bx+br>txL && bx-br<txR && by+br>trunkTop && by-br<GROUND_Y) return true;
+    // Canopy circle hit
+    const {canopyCX,canopyCY,canopyR} = treeCanopyInfo(o);
+    const dx=bx-canopyCX, dy=by-canopyCY;
+    if(dx*dx+dy*dy<(canopyR+br)*(canopyR+br)) return true;
+  }
+  return false;
+}
+
+// ── Game loop ────────────────────────────────────────────────────────────────
+function update(){
+  frame++;
+  if(state!=='playing') return;
+  if(invincible>0) invincible--;
+  if(frame%OBS_FREQ===0) spawnObstacle();
+  if(frame%FLW_FREQ===0) spawnFlower();
+
+  obstacles.forEach(o=>o.x-=SPEED);
+  flowers.forEach(f=>f.x-=SPEED*0.65);
+  obstacles=obstacles.filter(o=>o.x>-120);
+  flowers=flowers.filter(f=>f.x>-60);
+
+  butterfly.y=lerp(butterfly.y, handY*GROUND_Y, LERP_S);
+  butterfly.wingPhase+=0.18;
+
+  flowers=flowers.filter(f=>{
+    const dx=f.x-butterfly.x, dy=f.y-butterfly.y;
+    if(Math.sqrt(dx*dx+dy*dy)<38){
+      score++;
+      spawnStar(f.x,f.y,f.type.color);
+      praiseText=PRAISE[Math.floor(rand(0,PRAISE.length))];
+      praiseTimer=65;
+      return false;
+    }
+    return true;
+  });
+
+  if(invincible===0&&checkCollision()){
+    lives--;invincible=120;
+    spawnStar(butterfly.x,butterfly.y,'#ff8888');
+    if(lives<=0){
+      state='gameover';
+      document.getElementById('end-emoji').textContent=score>=8?'🎉':'🌸';
+      document.getElementById('end-msg').textContent=score>=8?'정말 잘했어요!':'수고했어요!';
+      document.getElementById('final-score').textContent=`꽃을 ${score}개 모았어요! 🌸`;
+      document.getElementById('gameover-screen').style.display='flex';
+    }
+  }
+
+  document.getElementById('score-display').textContent=score;
+  document.getElementById('lives-display').textContent='❤️'.repeat(Math.max(0,lives))+'🖤'.repeat(Math.max(0,5-lives));
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  drawBG();
+  obstacles.forEach(drawObstacleObj);
+  flowers.forEach(drawFlowerObj);
+  drawButterfly(butterfly.x,butterfly.y,butterfly.wingPhase);
+  drawStars();
+  drawPraise();
+  drawHandGuide();
+}
+
+function loop(){ update(); draw(); requestAnimationFrame(loop); }
+
+function resetGame(){
+  score=0;lives=5;frame=0;
+  butterfly={x:130,y:GROUND_Y/2,wingPhase:0};
+  obstacles=[];flowers=[];stars=[];
+  invincible=0;handY=0.5;praiseTimer=0;
+}
+
+async function startWebcam(){
+  const status=document.getElementById('cam-status');
+  status.textContent='카메라 연결하는 중이에요...';
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'}});
+    video.srcObject=stream;
+    await new Promise(r=>video.onloadedmetadata=r);
+    video.play();
+    video.style.display='block';
+    document.getElementById('cam-dot').style.display='block';
+    document.getElementById('cam-dot').style.background='#3B6D11';
+    status.textContent='';
+    setupHandTracking();
+  } catch(e){
+    status.textContent='마우스로 조종해요!';
+    setupMouseControl();startGame();
+  }
+}
+
+function setupMouseControl(){
+  canvas.addEventListener('mousemove',e=>{
+    const rect=canvas.getBoundingClientRect();
+    handY=Math.min(1,(e.clientY-rect.top)/rect.height);
+  });
+  canvas.addEventListener('touchmove',e=>{
+    e.preventDefault();
+    const rect=canvas.getBoundingClientRect();
+    handY=Math.min(1,(e.touches[0].clientY-rect.top)/rect.height);
+  },{passive:false});
+}
+
+function setupHandTracking(){
+  if(typeof Hands==='undefined'){setupMouseControl();startGame();return;}
+  const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+  hands.setOptions({maxNumHands:1,modelComplexity:0,minDetectionConfidence:0.5,minTrackingConfidence:0.5});
+  hands.onResults(results=>{
+    if(results.multiHandLandmarks&&results.multiHandLandmarks.length>0)
+      handY=results.multiHandLandmarks[0][0].y;
+  });
+  if(typeof Camera!=='undefined'){
+    new Camera(video,{onFrame:async()=>{await hands.send({image:video});},width:640,height:480}).start();
+  }
+  setupMouseControl();startGame();
+}
+
+function startGame(){
+  resetGame();state='playing';
+  document.getElementById('start-screen').style.display='none';
+  document.getElementById('gameover-screen').style.display='none';
+  spawnFlower();
+}
+
+document.getElementById('start-btn').addEventListener('click',startWebcam);
+document.getElementById('retry-btn').addEventListener('click',startGame);
+loop();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
